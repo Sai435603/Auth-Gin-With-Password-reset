@@ -2,13 +2,16 @@ package auth
 
 import (
 	"fmt"
-	"os"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtSecret = []byte(os.Getenv("SECRET_KEY"))
+var (
+	jwtSecret []byte
+	once      sync.Once
+)
 
 type Claims struct {
 	UserID string `json:"user_id"`
@@ -16,41 +19,53 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-func GenerateToken(userId string) (string, string, error) {
+func Init(secret string) error {
+	if secret == "" {
+		return fmt.Errorf("SECRET_KEY is not configured")
+	}
+	once.Do(func() {
+		jwtSecret = []byte(secret)
+	})
+	return nil
+}
+
+func GenerateToken(userID string) (string, string, error) {
 	if len(jwtSecret) == 0 {
 		return "", "", fmt.Errorf("jwt secret not configured")
 	}
-	// creating the acc token with exp 15 mins
-	accessTokenPayload := Claims{
-		UserID: userId,
+
+	now := time.Now()
+
+	accessClaims := Claims{
+		UserID: userID,
 		Type:   "access",
 		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 		},
 	}
 
-	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessTokenPayload)
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
 	accessTokenString, err := accessToken.SignedString(jwtSecret)
 	if err != nil {
 		return "", "", err
 	}
 
-	//creating the refresh token with exp 7days
-	refreshTokenPayload := Claims{
-		UserID: userId,
+	refreshClaims := Claims{
+		UserID: userID,
 		Type:   "refresh",
 		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(7 * 24 * time.Hour)),
 		},
 	}
 
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshTokenPayload)
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
 	refreshTokenString, err := refreshToken.SignedString(jwtSecret)
 	if err != nil {
 		return "", "", err
 	}
+
 	return accessTokenString, refreshTokenString, nil
 }
 
@@ -66,12 +81,8 @@ func ValidateToken(tokenString string, expectedType string) (*Claims, error) {
 		claims,
 		func(token *jwt.Token) (any, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf(
-					"unexpected signing method: %v",
-					token.Header["alg"],
-				)
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
-
 			return jwtSecret, nil
 		},
 	)
@@ -85,11 +96,7 @@ func ValidateToken(tokenString string, expectedType string) (*Claims, error) {
 	}
 
 	if claims.Type != expectedType {
-		return nil, fmt.Errorf(
-			"expected %s token but got %s token",
-			expectedType,
-			claims.Type,
-		)
+		return nil, fmt.Errorf("expected %s token but got %s token", expectedType, claims.Type)
 	}
 
 	return claims, nil
